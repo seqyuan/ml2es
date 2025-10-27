@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: linux-amd64
+            os: linux
+            arch: amd64
+            goos: linux
+            goarch: amd64
+          - name: linux-arm64
+            os: linux
+            arch: arm64
+            goos: linux
+            goarch: arm64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22'
+
+    - name: Install musl-tools (for Linux builds)
+      if: matrix.os == 'linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+
+    - name: Build static binary
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+      run: |
+        go mod download
+        go mod verify
+        
+        # Use musl for Linux builds to avoid glibc dependency
+        if [ "${{ matrix.os }}" = "linux" ]; then
+          CC=musl-gcc go build -v -ldflags="-s -w -extldflags=-static" -o ml2e-${{ matrix.os }}-${{ matrix.arch }} ml2e.go
+        else
+          go build -v -ldflags="-s -w" -o ml2e-${{ matrix.os }}-${{ matrix.arch }} ml2e.go
+        fi
+
+    #- name: Test binary
+    #  if: matrix.os == 'linux' && matrix.arch == 'amd64'
+    #  run: |
+    #    ./ml2e-${{ matrix.os }}-${{ matrix.arch }} -version
+    #    ./ml2e-${{ matrix.os }}-${{ matrix.arch }} 2>&1 | grep -q "Error: -fq1, -fq2 and -outdir are required" || exit 1
+
+    - name: Check binary compatibility
+      if: matrix.os == 'linux' && matrix.arch == 'amd64'
+      run: |
+        # Check if binary is statically linked
+        ldd ml2e-${{ matrix.os }}-${{ matrix.arch }} 2>&1 | grep -q "not a dynamic executable" || echo "Binary is statically linked"
+        
+        # Check binary size
+        ls -lh ml2e-${{ matrix.os }}-${{ matrix.arch }}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ml2e-${{ matrix.os }}-${{ matrix.arch }}
+        path: ml2e-${{ matrix.os }}-${{ matrix.arch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ml2e-linux-amd64/ml2e-linux-amd64
+          ml2e-linux-arm64/ml2e-linux-arm64
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}

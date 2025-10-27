@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.22', '1.23']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Verify dependencies
+      run: |
+        go mod download
+        go mod verify
+
+    - name: Check go.mod integrity
+      run: |
+        go mod tidy
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "go.mod or go.sum needs to be updated"
+          git diff
+          exit 1
+        fi
+
+    - name: Check for license issues
+      uses: apache/skywalking-eyes@main
+      with:
+        config: .licenserc.yaml
+
+    - name: Run linter
+      run: |
+        go vet ./...
+        go fmt ./...
+
+    - name: Run tests
+      run: |
+        go test -v ./...
+
+    - name: Build
+      run: |
+        go build -v -o ml2e ml2e.go
+
+    
