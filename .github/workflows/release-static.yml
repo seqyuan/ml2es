@@ -48,31 +48,31 @@ jobs:
         
         # Use musl for Linux builds to avoid glibc dependency
         if [ "${{ matrix.os }}" = "linux" ]; then
-          CC=musl-gcc go build -v -ldflags="-s -w -extldflags=-static" -o ml2e-${{ matrix.os }}-${{ matrix.arch }} ml2e.go
+          CC=musl-gcc go build -v -ldflags="-s -w -extldflags=-static" -o ml2es-${{ matrix.os }}-${{ matrix.arch }} ml2es.go
         else
-          go build -v -ldflags="-s -w" -o ml2e-${{ matrix.os }}-${{ matrix.arch }} ml2e.go
+          go build -v -ldflags="-s -w" -o ml2es-${{ matrix.os }}-${{ matrix.arch }} ml2es.go
         fi
 
     #- name: Test binary
     #  if: matrix.os == 'linux' && matrix.arch == 'amd64'
     #  run: |
-    #    ./ml2e-${{ matrix.os }}-${{ matrix.arch }} -version
+    #    ./ml2es-${{ matrix.os }}-${{ matrix.arch }} -version
     #    ./ml2e-${{ matrix.os }}-${{ matrix.arch }} 2>&1 | grep -q "Error: -fq1, -fq2 and -outdir are required" || exit 1
 
     - name: Check binary compatibility
       if: matrix.os == 'linux' && matrix.arch == 'amd64'
       run: |
         # Check if binary is statically linked
-        ldd ml2e-${{ matrix.os }}-${{ matrix.arch }} 2>&1 | grep -q "not a dynamic executable" || echo "Binary is statically linked"
+        ldd ml2es-${{ matrix.os }}-${{ matrix.arch }} 2>&1 | grep -q "not a dynamic executable" || echo "Binary is statically linked"
         
         # Check binary size
-        ls -lh ml2e-${{ matrix.os }}-${{ matrix.arch }}
+        ls -lh ml2es-${{ matrix.os }}-${{ matrix.arch }}
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ml2e-${{ matrix.os }}-${{ matrix.arch }}
-        path: ml2e-${{ matrix.os }}-${{ matrix.arch }}
+        name: ml2es-${{ matrix.os }}-${{ matrix.arch }}
+        path: ml2es-${{ matrix.os }}-${{ matrix.arch }}
 
   release:
     needs: build
@@ -90,8 +90,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          ml2e-linux-amd64/ml2e-linux-amd64
-          ml2e-linux-arm64/ml2e-linux-arm64
+          ml2es-linux-amd64/ml2es-linux-amd64
+          ml2es-linux-arm64/ml2es-linux-arm64
         draft: false
         prerelease: false
         generate_release_notes: true
