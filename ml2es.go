@@ -266,14 +266,13 @@ func (bfw *BufferedFastqWriter) Close() error {
 }
 
 func usage() {
-	fmt.Printf("\nProgram: ml2es - FastQ read ID modifier (configurable prefix replacement) (use 6-8 threads)\n")
+	fmt.Printf("\nProgram: ml2es - FastQ read ID modifier (configurable prefix replacement)\n")
 	fmt.Printf("Usage: ml2es [options]\n\n")
 	fmt.Printf("Options:\n")
 	fmt.Printf("  -fq         Input fastq file (supports .gz format)\n")
 	fmt.Printf("  -out        Output file path (without .gz suffix)\n")
 	fmt.Printf("  -from       Source prefix to replace (default: ML15)\n")
 	fmt.Printf("  -to         Target prefix to replace with (default: E251)\n")
-	fmt.Printf("  -workers    Number of worker threads (default: 4, recommend 6-8)\n")
 	fmt.Printf("  -pigz       Path to pigz executable for compression\n")
 	fmt.Printf("  -pigz-decompress  Use pigz for decompression (faster for gzip files)\n")
 	fmt.Printf("  -version    Show version information\n\n")
@@ -282,7 +281,7 @@ func usage() {
 	fmt.Printf("  ml2es -fq input.fastq -out output.fastq\n")
 	fmt.Printf("  ml2es -fq input.fastq -out output.fastq -from ML15 -to E251\n")
 	fmt.Printf("  ml2es -fq input.fastq.gz -out output.fastq -pigz /usr/bin/pigz\n")
-	fmt.Printf("  ml2es -fq input.fastq.gz -out output.fastq -from ML15 -to E251 -workers 8\n")
+	fmt.Printf("  ml2es -fq input.fastq.gz -out output.fastq -from ML15 -to E251 -pigz /usr/bin/pigz\n")
 	os.Exit(1)
 }
 
@@ -325,49 +324,30 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 	var mu sync.Mutex
 
 	// 动态缓存配置 - 针对gzip文件优化
-	const workerBatchSize = 5000 // 每个worker一次处理5000条reads（增加以提高吞吐量）
-	const readBatchSize = 50000  // 读取批次大小50K（gzip文件不宜过大）
+	const workerBatchSize = 20000 // 每个worker一次处理20000条reads
+	const readBatchSize = 60000   // 读取批次大小60K（gzip文件优化）
 
-	// 智能缓存容量计算 - 针对高worker数量优化
-	// 写入缓存：worker数量 * 批处理大小 * 缓冲倍数(3-4倍)
-	writeCacheMultiplier := 4
-	if numWorkers <= 4 {
-		writeCacheMultiplier = 4 // 少worker时增加缓冲
-	} else if numWorkers >= 8 {
-		writeCacheMultiplier = 3 // 多worker时适度缓冲
-	}
-	writeCacheCapacity := int64(numWorkers) * workerBatchSize * int64(writeCacheMultiplier)
+	// 通道容量以“批次数”计，形成有效背压，避免内存积累
+	// 固定为小批次数（numWorkers=4 时为 16 批）
+	const writeCacheBatches = 16 // 4 * numWorkers
+	const readQueueBatches = 16  // 4 * numWorkers
 
-	// 读取队列：worker数量 * 批处理大小 * 缓冲倍数(2-3倍)
-	readQueueMultiplier := 2
-	if numWorkers <= 4 {
-		readQueueMultiplier = 3 // 少worker时增加缓冲
-	} else if numWorkers >= 8 {
-		readQueueMultiplier = 2 // 多worker时适度缓冲
-	}
-	readQueueCapacity := int64(numWorkers) * workerBatchSize * int64(readQueueMultiplier)
-
-	// 动态写入批次大小 - 基于worker数量优化，减少内存积累
-	writeBatchSize := numWorkers * 1000 // 每个worker贡献1000条reads（增加以提升IO效率）
-	if writeBatchSize < 4000 {
-		writeBatchSize = 4000 // 最小保证4000条
-	} else if writeBatchSize > 15000 {
-		writeBatchSize = 15000 // 最大限制15000条
-	}
+	// 固定写入批次大小 - 提升IO效率
+	const writeBatchSize = 20000 // 固定20000条reads
 
 	// 批量读取配置 - 针对gzip文件优化
-	const batchQueueSize = 15 // 适中的队列大小，避免gzip读取阻塞
+	const batchQueueSize = 8 // 5-10 批，小容量以形成背压
 
 	// 检测gzip文件并输出优化提示
 	if strings.HasSuffix(fq, ".gz") {
 		fmt.Printf("Gzip files detected - using optimized gzip reading strategy\n")
 	}
 
-	// 创建写入缓存池，根据worker批量处理调整容量（使用有序批次）
-	writeCache := make(chan *OrderedBatch, writeCacheCapacity)
+	// 创建写入缓存池（使用有序批次，按批次数控制容量）
+	writeCache := make(chan *OrderedBatch, writeCacheBatches)
 
-	// 创建读取队列，根据worker批量处理调整容量
-	readQueue := make(chan []fastq.Sequence, readQueueCapacity)
+	// 创建读取队列（按批次数控制容量）
+	readQueue := make(chan []fastq.Sequence, readQueueBatches)
 
 	// 批次序号计数器
 	var batchSequence int64
@@ -607,7 +587,6 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 func main() {
 	// 定义命令行参数
 	var fq, out, fromPrefix, toPrefix, pigzPath string
-	var numWorkers int
 	var showVersion bool
 	var usePigzDecompress bool
 
@@ -615,7 +594,6 @@ func main() {
 	flag.StringVar(&out, "out", "", "Output file path (without .gz suffix)")
 	flag.StringVar(&fromPrefix, "from", DefaultFromPrefix, "Source prefix to replace")
 	flag.StringVar(&toPrefix, "to", DefaultToPrefix, "Target prefix to replace with")
-	flag.IntVar(&numWorkers, "workers", 4, "Number of worker threads")
 	flag.StringVar(&pigzPath, "pigz", "", "Path to pigz executable for compression")
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
 	flag.BoolVar(&usePigzDecompress, "pigz-decompress", false, "Use pigz for decompression (faster for gzip files)")
@@ -635,10 +613,8 @@ func main() {
 		usage()
 	}
 
-	if numWorkers < 1 {
-		fmt.Println("Error: workers must be at least 1")
-		usage()
-	}
+	// 固定worker数量为4
+	numWorkers := 4
 
 	// 执行高性能批量读取流水线模式
 	fmt.Println("Starting read ID modification pipeline...")

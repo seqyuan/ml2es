@@ -27,7 +27,6 @@ ml2es [选项]
 
 - `-from`：源前缀（默认：ML15）
 - `-to`：目标前缀（默认：E251）
-- `-workers`：worker线程数量（默认：4，建议6-8）
 - `-pigz`：pigz可执行文件路径，用于压缩输出文件
 - `-pigz-decompress`：使用pigz进行解压缩（对gzip文件更快）
 - `-version`：显示版本信息
@@ -41,7 +40,8 @@ ml2es -fq input.fastq.gz -out output.fastq
 
 #### 高并发处理
 ```bash
-ml2es -fq input.fastq -out output.fastq -workers 8
+# 默认使用4个worker线程，无需额外指定
+ml2es -fq input.fastq -out output.fastq
 ```
 
 #### 自定义前缀
@@ -111,9 +111,9 @@ go build -o ml2es ml2e.go
 
 ```shell
 git add -A
-git commit -m "v0.1.2"
-git tag v0.1.2
+git commit -m "v0.1.3"
+git tag v0.1.3
 git push origin main
-git push origin v0.1.2
+git push origin v0.1.3
 ```
 
