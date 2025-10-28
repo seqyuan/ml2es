@@ -33,6 +33,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/seqyuan/annogene/io/fastq"
 )
@@ -324,8 +325,8 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 	var mu sync.Mutex
 
 	// 动态缓存配置 - 针对gzip文件优化
-	const workerBatchSize = 20000 // 每个worker一次处理20000条reads
-	const readBatchSize = 60000   // 读取批次大小60K（gzip文件优化）
+	const workerBatchSize = 50000 // 每个worker一次处理50000条reads
+	const readBatchSize = 100000  // 读取批次大小100K
 
 	// 通道容量以“批次数”计，形成有效背压，避免内存积累
 	// 固定为小批次数（numWorkers=4 时为 16 批）
@@ -333,7 +334,7 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 	const readQueueBatches = 16  // 4 * numWorkers
 
 	// 固定写入批次大小 - 提升IO效率
-	const writeBatchSize = 20000 // 固定20000条reads
+	const writeBatchSize = 50000 // 固定50000条reads
 
 	// 批量读取配置 - 针对gzip文件优化
 	const batchQueueSize = 8 // 5-10 批，小容量以形成背压
@@ -371,6 +372,8 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 		for scanner.Next() {
 			batch = append(batch, scanner.Seq())
 			if len(batch) >= readBatchSize {
+				// 记录读取一个批次的时间
+				start := time.Now()
 				select {
 				case batchQueue <- batch:
 					currentReads := atomic.AddInt64(&totalReads, int64(len(batch)))
@@ -382,10 +385,12 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 				case <-stopReading:
 					return
 				}
+				fmt.Printf("[TIMING] readBatchSize=%d took=%s\n", readBatchSize, time.Since(start))
 			}
 		}
 		// 发送最后一批
 		if len(batch) > 0 {
+			start := time.Now()
 			select {
 			case batchQueue <- batch:
 				currentReads := atomic.AddInt64(&totalReads, int64(len(batch)))
@@ -395,6 +400,7 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 			case <-stopReading:
 				return
 			}
+			fmt.Printf("[TIMING] readBatchSize=%d took=%s (last)\n", readBatchSize, time.Since(start))
 		}
 		close(batchQueue)
 	}()
@@ -453,8 +459,10 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 				// 获取批次序号
 				batchSeq := <-batchSequenceChan
 
-				// 批量处理reads
+				// 批量处理reads（计时）
+				start := time.Now()
 				results := processReadBatch(readBatch, fromPrefix, toPrefix)
+				fmt.Printf("[TIMING] worker=%d workerBatchSize=%d took=%s (seq=%d)\n", workerID, workerBatchSize, time.Since(start), batchSeq)
 
 				// 包装为有序批次
 				orderedBatch := &OrderedBatch{
@@ -488,6 +496,7 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 				// 结束信号，写入所有剩余批次
 				for len(orderedBuffer) > 0 {
 					if batch, exists := orderedBuffer[nextSequence]; exists {
+						start := time.Now()
 						for _, result := range batch.Batch {
 							if err := bufferedW.Write(result.Seq); err != nil {
 								log.Printf("Error writing: %v", err)
@@ -497,6 +506,7 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 						mu.Lock()
 						totalOutputReads += int64(len(batch.Batch))
 						mu.Unlock()
+						fmt.Printf("[TIMING] writeBatchSize=%d took=%s (seq=%d)\n", len(batch.Batch), time.Since(start), nextSequence)
 						delete(orderedBuffer, nextSequence)
 						nextSequence++
 					} else {
@@ -513,6 +523,7 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 			// 尝试按顺序写入所有ready的批次
 			for {
 				if batch, exists := orderedBuffer[nextSequence]; exists {
+					start := time.Now()
 					for _, result := range batch.Batch {
 						if err := bufferedW.Write(result.Seq); err != nil {
 							log.Printf("Error writing: %v", err)
@@ -522,6 +533,7 @@ func mainPipelineMode(fq, out, fromPrefix, toPrefix string, numWorkers int, pigz
 					mu.Lock()
 					totalOutputReads += int64(len(batch.Batch))
 					mu.Unlock()
+					fmt.Printf("[TIMING] writeBatchSize=%d took=%s (seq=%d)\n", len(batch.Batch), time.Since(start), nextSequence)
 					delete(orderedBuffer, nextSequence)
 					nextSequence++
 				} else {
